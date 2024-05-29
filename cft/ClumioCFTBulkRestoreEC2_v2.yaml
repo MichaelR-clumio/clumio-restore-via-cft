@@ -404,11 +404,11 @@ Resources:
               return secretDict
 
             def lambda_handler(event, context):
-              logger.info('got event {}'.format(event))  
+              #logger.info('got event {}'.format(event))  
               try: 
                 responseData = {}
                 if event['RequestType'] == 'Delete':
-                  logger.info('Incoming RequestType: Delete operation') 
+                  #logger.info('Incoming RequestType: Delete operation') 
                   cfnresponse.send(event, context, cfnresponse.SUCCESS, {})
                 if event['RequestType'] in ["Create", "Update"]:                      
                   # 1. retrieve resource reference ID or Name
