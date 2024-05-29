@@ -1,0 +1,542 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: Clumio Test Stack for Lambda Runtime
+Parameters:
+      ClumioSourceAccount:
+        Type: String
+        Description: Destination bucket in Clumio for export data (tied to Clumoio Target Role)
+        Default: '908805993149'
+        AllowedValues:
+          - '908805993149'
+          - '774032570701'
+          - '323724565630'
+          - '080005437757'
+          - '757214333202'
+      ClumioSourceAWSRegion:
+        Type: String
+        Description: Source AWS region
+        Default: us-west-2
+        AllowedValues:
+          - us-east-1
+          - us-east-2
+          - us-west-2
+          - eu-west-1
+      SourceAWSTagKey:
+        Type: String
+        Description: Identifying AWS Tag Key
+        Default: Compliance
+      SourceAWSTagValue:
+        Type: String
+        Description: Identifying AWS Tag Value
+        Default: Standard
+Resources:
+    KMSKey:
+      Type: 'AWS::KMS::Key'
+      Properties:
+        Description: KMS key
+        EnableKeyRotation: True
+        KeyPolicy:
+          Version: "2012-10-17"
+          Id: !Ref "AWS::StackName"
+          Statement:
+            - Sid: "Allow administration of the key"
+              Effect: "Allow"
+              Principal:
+                AWS:
+                  Fn::Sub: 'arn:${AWS::Partition}:iam::${AWS::AccountId}:root'
+              Action:
+                - "kms:*"
+              Resource: "*"
+    NewKeyPair:
+      Type: 'AWS::EC2::KeyPair'
+      Properties: 
+        KeyName: !Sub "zxxz-${AWS::AccountId}-ec2-key-${AWS::StackName}"
+    VPC:
+      Type: "AWS::EC2::VPC"
+      Properties:
+        CidrBlock: "10.3.0.0/16"
+        Tags:
+        - Key: "Name"
+          Value: !Sub "zxxzCLUMIOVPC-${AWS::StackName}"
+
+    SubnetA:
+      Type: "AWS::EC2::Subnet"
+      Properties:
+        AvailabilityZone: !Select 
+          - 0
+          - !GetAZs 
+            Ref: 'AWS::Region'
+        VpcId: !Ref "VPC"
+        CidrBlock: "10.3.0.0/24"
+
+    SubnetB:
+      Type: "AWS::EC2::Subnet"
+      Properties:
+        AvailabilityZone: !Select 
+          - 1
+          - !GetAZs 
+            Ref: 'AWS::Region'
+        VpcId: !Ref "VPC"
+        CidrBlock: "10.3.1.0/24"
+
+    RouteTable:
+      Type: "AWS::EC2::RouteTable"
+      Properties:
+        VpcId: !Ref "VPC"
+
+    InternetGateway:
+      Type: "AWS::EC2::InternetGateway"
+
+    VPCGatewayAttachment:
+      Type: "AWS::EC2::VPCGatewayAttachment"
+      Properties:
+        VpcId: !Ref "VPC"
+        InternetGatewayId: !Ref "InternetGateway"
+
+    InternetRoute:
+      Type: "AWS::EC2::Route"
+      Properties:
+        DestinationCidrBlock: "0.0.0.0/0"
+        GatewayId: !Ref InternetGateway
+        RouteTableId: !Ref RouteTable
+    SubnetARouteTableAssociation:
+      Type: "AWS::EC2::SubnetRouteTableAssociation"
+      Properties:
+        RouteTableId: !Ref RouteTable
+        SubnetId: !Ref SubnetA
+
+    SubnetBRouteTableAssociation:
+      Type: "AWS::EC2::SubnetRouteTableAssociation"
+      Properties:
+        RouteTableId: !Ref RouteTable
+        SubnetId: !Ref SubnetB
+
+    SubnetGroup:
+      Type: "AWS::RDS::DBSubnetGroup"
+      Properties:
+        DBSubnetGroupName: !Sub "subnetgroup-${AWS::StackName}"
+        DBSubnetGroupDescription: "Subnet Group"
+        SubnetIds:
+        - !Ref "SubnetA"
+        - !Ref "SubnetB"
+    BucketPolicyA:
+        Type: 'AWS::S3::BucketPolicy'
+        Properties:
+          Bucket: !Ref Bucket
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+            - Sid: ThisIsSid 
+              Effect: Allow
+              Principal:
+                AWS: 
+                  - !Sub 'arn:aws:iam::${AWS::AccountId}:role/${RunAutomationRole}'
+              Action: 
+                - 's3:*'
+              Resource:
+                - !Sub '${Bucket.Arn}/*'
+                - !Sub '${Bucket.Arn}'
+    Bucket:
+      Type: 'AWS::S3::Bucket'
+      Properties:
+        BucketName: !Sub '${AWS::AccountId}-dynam-rds-restore-test-${AWS::StackName}'
+        Tags: 
+          - Key: "ClumioProtect"
+            Value: "Enable"
+        PublicAccessBlockConfiguration: 
+          BlockPublicAcls: true
+          BlockPublicPolicy: true
+          IgnorePublicAcls: true
+          RestrictPublicBuckets: true
+        VersioningConfiguration: 
+          Status: Enabled
+    RDSSecurityGroup:
+      Type: "AWS::EC2::SecurityGroup"
+      Properties:
+        GroupName: "RDS Security Group"
+        GroupDescription: "RDS traffic"
+        VpcId: !Ref "VPC"
+        SecurityGroupIngress:
+          - CidrIp: 0.0.0.0/0
+            FromPort: 22
+            IpProtocol: tcp
+            ToPort: 22
+          - CidrIp: 0.0.0.0/0
+            FromPort: 80
+            IpProtocol: tcp
+            ToPort: 80
+        SecurityGroupEgress:
+        - IpProtocol: "-1"
+          CidrIp: "0.0.0.0/0"
+    ServerProfile:
+      Type: AWS::IAM::InstanceProfile
+      Properties:
+        Roles:
+          - !Ref 'AutomationInstanceProfileRole'
+        Path: /
+    RDSSecurityGroupIngress:
+      Type: "AWS::EC2::SecurityGroupIngress"
+      DependsOn: "RDSSecurityGroup"
+      Properties:
+        GroupId: !Ref "RDSSecurityGroup"
+        IpProtocol: "tcp"
+        FromPort: "0"
+        ToPort: "65535"
+        SourceSecurityGroupId: !Ref "RDSSecurityGroup"
+    AutomationInstanceProfileRole:
+      Type: AWS::IAM::Role
+      Properties:
+        Description: 'EC2 Instance Profile Role'
+        ManagedPolicyArns:
+          - !Sub 'arn:${AWS::Partition}:iam::aws:policy/AmazonFSxFullAccess'
+          - !Sub 'arn:${AWS::Partition}:iam::aws:policy/AmazonS3FullAccess'
+          - !Sub 'arn:${AWS::Partition}:iam::aws:policy/AmazonEC2FullAccess'
+          - !Sub 'arn:${AWS::Partition}:iam::aws:policy/AmazonSSMManagedInstanceCore'
+          - !Sub 'arn:${AWS::Partition}:iam::aws:policy/AmazonSSMDirectoryServiceAccess'
+          - !Sub 'arn:${AWS::Partition}:iam::aws:policy/CloudWatchAgentServerPolicy'
+          - !Sub 'arn:${AWS::Partition}:iam::aws:policy/AmazonSSMManagedEC2InstanceDefaultPolicy'
+          - !Sub 'arn:${AWS::Partition}:iam::aws:policy/AdministratorAccess'
+        Policies:
+          - PolicyDocument:
+              Version: '2012-10-17'
+              Statement:
+                - Action:
+                    - "ssm:StartAutomationExecution"
+                  Resource:
+                    - '*'
+                  Effect: Allow
+            PolicyName: SSM-Execute-Automation
+        Path: /
+        AssumeRolePolicyDocument:
+          Statement:
+            - Action:
+                - sts:AssumeRole
+              Principal:
+                Service:
+                  - ec2.amazonaws.com
+              Effect: Allow
+          Version: '2012-10-17'
+    ADSsmPassRolePolicy2:
+      Type: AWS::IAM::Policy
+      Properties:
+        PolicyName: SSM-PassRole
+        PolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+            - Effect: Allow
+              Action:
+                - iam:PassRole
+                - iam:GetRole
+              Resource: 
+                - !GetAtt RunAutomationRole.Arn
+                - !GetAtt AutomationInstanceProfileRole.Arn
+                - !Sub 'arn:aws:iam::${AWS::AccountId}:role/*'
+        Roles:
+          - !Ref 'AutomationInstanceProfileRole'
+    RunAutomationRole:
+      Type: AWS::IAM::Role
+      Properties:
+        Description: 'Automation Role'
+        ManagedPolicyArns:
+          - !Sub 'arn:${AWS::Partition}:iam::aws:policy/AmazonFSxFullAccess'
+          - !Sub 'arn:${AWS::Partition}:iam::aws:policy/AmazonS3FullAccess'
+          - !Sub 'arn:${AWS::Partition}:iam::aws:policy/AmazonEC2FullAccess'
+          - !Sub 'arn:${AWS::Partition}:iam::aws:policy/AmazonRDSFullAccess'
+          - !Sub 'arn:${AWS::Partition}:iam::aws:policy/AWSDirectoryServiceFullAccess'
+          - !Sub 'arn:${AWS::Partition}:iam::aws:policy/CloudWatchFullAccess'
+          - !Sub 'arn:${AWS::Partition}:iam::aws:policy/AmazonSSMFullAccess'
+          - !Sub 'arn:${AWS::Partition}:iam::aws:policy/AdministratorAccess'
+        Path: /
+        Policies:
+          - PolicyName: CustomLambdaEC2DescribePolicy1
+            PolicyDocument:
+              Version: '2012-10-17'
+              Statement:
+                - Effect: Allow
+                  Action:
+                    - logs:CreateLogGroup
+                    - logs:CreateLogStream
+                    - logs:PutLogEvents
+                  Resource: arn:aws:logs:*:*:*
+                - Effect: Allow
+                  Action:
+                    - ec2:DescribeSecurityGroups
+                  Resource: '*'
+          - PolicyName: SecretsPolicy
+            PolicyDocument:
+              Version: '2012-10-17'
+              Statement:
+                - Effect: Allow
+                  Action:
+                    - ssm:StartAutomationExecution
+                  Resource: '*'
+        AssumeRolePolicyDocument:
+          Statement:
+            - Action:
+                - sts:AssumeRole
+              Principal:
+                Service:
+                  - ssm.amazonaws.com
+                  - lambda.amazonaws.com
+              Effect: Allow
+          Version: '2012-10-17'
+    ADSsmPassRolePolicy:
+      Type: AWS::IAM::Policy
+      Properties:
+        PolicyName: SSM-PassRole
+        PolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+            - Effect: Allow
+              Action:
+                - iam:PassRole
+                - iam:GetRole
+              Resource: 
+                - !GetAtt RunAutomationRole.Arn
+                - !GetAtt AutomationInstanceProfileRole.Arn
+                - !Sub 'arn:aws:iam::${AWS::AccountId}:role/*'
+        Roles:
+          - !Ref 'RunAutomationRole'
+
+    CustomLambdaStatus:
+      Type: AWS::CloudFormation::CustomResource
+      DependsOn: 
+        - ServerProfile
+        - Bucket
+        - SubnetB
+        - SubnetGroup
+        - RDSSecurityGroup
+        - KMSKey
+        - NewKeyPair
+      Properties:
+        ServiceToken: !GetAtt 'CustomFunction.Arn'
+        SSMRole: !GetAtt 'RunAutomationRole.Arn'
+        KMSARN: !GetAtt 'KMSKey.Arn'
+        KMSID: !GetAtt 'KMSKey.KeyId'
+        SubNetGroup: !Ref "SubnetGroup"
+        SGID: !Ref "RDSSecurityGroup"
+        VPC: !Ref "VPC"
+        SUBNET: !Ref "SubnetB"
+        IamInstanceProfile: !Ref "ServerProfile"
+        BUCKET: !Ref "Bucket"
+        EC2KEY: !Ref "NewKeyPair"
+        EC2KEYID: !GetAtt 'NewKeyPair.KeyPairId'
+        AWSREGION: !Ref 'AWS::Region'
+        AWSACCOUNTID: !Ref 'AWS::AccountId'
+        ClumioSourceAccount: !Ref ClumioSourceAccount
+        ClumioSourceAWSRegion: !Ref ClumioSourceAWSRegion
+        SourceAWSTagKey: !Ref SourceAWSTagKey
+        SourceAWSTagValue: !Ref SourceAWSTagValue
+
+    ClumioSDKLayer:
+      Type: AWS::Lambda::LayerVersion
+      Properties:
+        LayerName: !Sub "clumio-api-layer-${AWS::AccountId}-${AWS::StackName}"
+        Description: Clumio SDK and required packages
+        Content:
+          S3Bucket: 163127451099-clumio-imd-zxxz
+          S3Key: clumioSDKv3.zip
+        CompatibleRuntimes:
+          - python3.9
+          - python3.10
+          - python3.11
+
+    CustomFunction:
+      Type: AWS::Lambda::Function
+      Properties:
+        FunctionName: !Sub "ClumioAPILambdaAutomation-${AWS::AccountId}-${AWS::StackName}"
+        Layers:
+          - !Ref ClumioSDKLayer
+        Handler: index.lambda_handler
+        Description: "Run Clumio APIs"
+        Timeout: 900
+        Role: !GetAtt 'RunAutomationRole.Arn'
+        Runtime: python3.11
+        Code:
+          ZipFile: |
+            import json
+            import logging
+            import cfnresponse
+            import boto3
+            import time
+            from datetime import datetime, timedelta, timezone
+            import json
+            import boto3
+            from botocore.exceptions import ClientError
+            from ClumioAPISDK import RestoreEC2, EC2BackupList, ListEC2Instance, OnDemandBackupEC2
+
+            logger = logging.getLogger()
+            logger.setLevel(logging.INFO)
+
+            def get_secret():
+              secret_name = "clumioSDK/API/token"
+              region_name = "us-east-1"
+              # Create a Secrets Manager client
+              session = boto3.session.Session()
+              client = session.client(
+                  service_name='secretsmanager',
+                  region_name=region_name
+              )
+
+              try:
+                  get_secret_value_response = client.get_secret_value(
+                      SecretId=secret_name
+                  )
+              except ClientError as e:
+                  # For a list of exceptions thrown, see
+                  # https://docs.aws.amazon.com/secretsmanager/latest/apireference/API_GetSecretValue.html
+                  raise e
+
+              secret = get_secret_value_response['SecretString']
+              secretDict = json.loads(secret)
+              return secretDict
+
+            def lambda_handler(event, context):
+              logger.info('got event {}'.format(event))  
+              try: 
+                responseData = {}
+                if event['RequestType'] == 'Delete':
+                  logger.info('Incoming RequestType: Delete operation') 
+                  cfnresponse.send(event, context, cfnresponse.SUCCESS, {})
+                if event['RequestType'] in ["Create", "Update"]:                      
+                  # 1. retrieve resource reference ID or Name
+                  ServiceToken=event.get('ResourceProperties',{}).get('ServiceToken',None)
+                  SSMRole=event.get('ResourceProperties',{}).get('SSMRole',None)
+                  search_account = event.get('ResourceProperties',{}).get('ClumioSourceAccount',None)
+                  search_region = event.get('ResourceProperties',{}).get('ClumioSourceAWSRegion',None)
+                  search_tag_key = event.get('ResourceProperties',{}).get('SourceAWSTagKey',None)
+                  search_tag_value = event.get('ResourceProperties',{}).get('SourceAWSTagValue',None)
+
+
+                  KMSARN=event.get('ResourceProperties',{}).get('KMSARN')
+                  KMSID=event.get('ResourceProperties',{}).get('KMSID')
+                  SubNetGroup=event.get('ResourceProperties',{}).get('SubNetGroup')
+                  SGID=event.get('ResourceProperties',{}).get('SGID')
+                  VPC=event.get('ResourceProperties',{}).get('VPC')
+                  SUBNET=event.get('ResourceProperties',{}).get('SUBNET')
+                  IamInstanceProfile=event.get('ResourceProperties',{}).get('IamInstanceProfile')
+                  BUCKET=event.get('ResourceProperties',{}).get('BUCKET')
+                  EC2KEY=event.get('ResourceProperties',{}).get('EC2KEY')
+                  EC2KEYID=event.get('ResourceProperties',{}).get('EC2KEYID')
+                  AWSREGION=event.get('ResourceProperties',{}).get('AWSREGION',None)
+                  AWSACCOUNTID=event.get('ResourceProperties',{}).get('AWSACCOUNTID',None)
+                  
+                  Done=["CompletedWithSuccess","Success","TimedOut","Cancelled","Failed"]
+                  
+
+                  #Save EC2 KeyPair
+                  name = f"/ec2/keypair/{EC2KEYID}"
+                  ssm_client = boto3.client('ssm')
+                  response = ssm_client.get_parameter(
+                                  Name=name,
+                                  WithDecryption=True
+                              )
+                  key_value = response.get("Parameter",{}).get("Value",None)
+                  s3 = boto3.resource(
+                                  's3',
+                                  region_name=AWSREGION
+                              )
+                  obj_name = f"EC2Key/{EC2KEY}.pem"
+                  s3.Object(BUCKET, obj_name).put(Body=key_value)
+
+
+                  #Define AWS AZ 
+                  Complete = "passed"
+
+                  clientEC2 = boto3.client('ec2')
+
+                  response = clientEC2.describe_vpcs()
+
+                  vpcList = response.get("Vpcs", [])
+                  vpcDict = {}
+                  for vpc in vpcList:
+                      vpcID = vpc.get("VpcId", None)
+
+                      response2 = clientEC2.describe_subnets(
+                          Filters=[
+                              {
+                                  'Name': 'vpc-id',
+                                  'Values': [
+                                      vpcID,
+                                  ],
+                              },
+                          ],
+                      )
+
+                      subNetList = response2.get("Subnets", [])
+                      subNetDict = {}
+                      for subnet in subNetList:
+                          az = subnet.get("AvailabilityZone", None)
+                          subNetId = subnet.get("SubnetId", None)
+                          if subNetId and az:
+                              if not subNetDict.get("subNetId", False):
+                                  subNetDict[subNetId] = [az]
+                              else:
+                                  subNetDict[subNetId].append(az)
+                          else:
+                              print(f"error reading info for vpc - {subNetList}")
+                      vpcDict[vpcID] = subNetDict
+                  awsAZ = vpcDict[VPC][SUBNET][0]
+
+
+                  rsp3 = get_secret()
+
+                  Bear = rsp3.get("token",None)
+                  test2 = EC2BackupList()
+                  test2.SetToken(Bear)
+                  test2.SetPageSize(100)
+                  test2.SetDebug(0)
+                  rsp_list_ec2 = {}
+
+                  #Validate account and region
+                  if test2.SetAWSAccountId(search_account) and test2.SetAWSRegion(search_region):
+                      #Set search parameters
+                      #test2.EC2SearchByTag(search_tag_key, search_tag_value)
+                      test2.SetSearchTimeFrameBeforeAfter("After")
+                      test2.SetSearchStartDay(0)
+                      test2.SetSearchEndDay(10)
+                      #RUN search across all backups (using Pagination) note some search parameters set in the API
+                      stuff = test2.runAll()
+                      # # print(stuff)
+
+
+                      #Parse the Search results based upon secondary search paramters and produce results
+                      rsp_list_ec2 = test2.EC2ParseResults("Restore")
+                      #If you want to see the search results
+                      rstString = json.dumps(rsp_list_ec2, indent=2)
+
+                  # SETUP API for doing a restore
+                  test5 = RestoreEC2()
+                  #SET Token
+                  test5.SetToken(Bear)
+                  test5.SetDebug(0)
+                  #Create infrastructure values <valid in the target location> to be used with restore.  Simple (default) restore mode uses same values for all restores.
+                  TARGET = {
+                              "account": AWSACCOUNTID,
+                              "region": AWSREGION,
+                              "aws_az": awsAZ,
+                              "iam_instance_profile_name": IamInstanceProfile,
+                              "key_pair_name": EC2KEY,
+                              "security_group_native_ids": [SGID],
+                              "subnet_native_id": SUBNET,
+                              "vpc_native_id": VPC,
+                              "kms_key_native_id": KMSID
+                          }
+                  print(f"Target {TARGET}")
+                  #Save target infrastructure to the API
+                  test5.SetTargetForInstanceRestore(TARGET)
+                  #Covernt backup record to a list
+                  records = rsp_list_ec2.get("Records",[])
+
+                  #Pass backup list to the API and run restores
+                  test5.EC2RestoreFromRecord(records)
+             
+                  return {
+                      'statusCode': 200,
+                      'body': json.dumps(rstString)
+                  }
+                  cfnresponse.send(event, context, cfnresponse.SUCCESS,responseData)
+              except Exception as err:
+                logger.error(err)
+                responseData = {"Data": str(err)}
+                cfnresponse.send(event,context,cfnresponse.FAILED,responseData)
+              return
