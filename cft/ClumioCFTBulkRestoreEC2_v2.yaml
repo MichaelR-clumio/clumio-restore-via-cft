@@ -1,6 +1,17 @@
 AWSTemplateFormatVersion: 2010-09-09
 Description: Clumio Test Stack for Lambda Runtime
 Parameters:
+      LambdaLayerS3BucketRepository:
+        Type: String
+        Description: A S3 bucket in same region as deployment where Lambda Layer file can be pulled from during CFT deployment
+        Default: 163127451099-clumio-cloudformation-templates
+      LambdaLayerFile:
+        Type: String
+        Description: the S3 URI of the file minus the bucket.  I.E.  Prefix and object name
+        Default: clumioSDKv3.zip
+      ClumioAPIToken:
+        Type: String
+        Description: Clumio bearer token that grants privileges to run Clumio APIs.
       ClumioSourceAccount:
         Type: String
         Description: Destination bucket in Clumio for export data (tied to Clumoio Target Role)
@@ -326,6 +337,7 @@ Resources:
         ClumioSourceAWSRegion: !Ref ClumioSourceAWSRegion
         SourceAWSTagKey: !Ref SourceAWSTagKey
         SourceAWSTagValue: !Ref SourceAWSTagValue
+        ClumioAPIToken: !Ref ClumioAPIToken
 
     ClumioSDKLayer:
       Type: AWS::Lambda::LayerVersion
@@ -333,8 +345,8 @@ Resources:
         LayerName: !Sub "clumio-api-layer-${AWS::AccountId}-${AWS::StackName}"
         Description: Clumio SDK and required packages
         Content:
-          S3Bucket: 163127451099-clumio-imd-zxxz
-          S3Key: clumioSDKv3.zip
+          S3Bucket: !Ref LambdaLayerS3BucketRepository
+          S3Key: !Ref LambdaLayerFile
         CompatibleRuntimes:
           - python3.9
           - python3.10
@@ -370,7 +382,8 @@ Resources:
             def get_secret():
               secret_name = "clumioSDK/API/token"
               region_name = "us-east-1"
-              # Create a Secrets Manager client
+              
+              # Create a Secrets Manager client (Depricated)
               session = boto3.session.Session()
               client = session.client(
                   service_name='secretsmanager',
@@ -405,6 +418,7 @@ Resources:
                   search_region = event.get('ResourceProperties',{}).get('ClumioSourceAWSRegion',None)
                   search_tag_key = event.get('ResourceProperties',{}).get('SourceAWSTagKey',None)
                   search_tag_value = event.get('ResourceProperties',{}).get('SourceAWSTagValue',None)
+                  clumio_token = event.get('ResourceProperties',{}).get('ClumioAPIToken',None)
 
 
                   KMSARN=event.get('ResourceProperties',{}).get('KMSARN')
@@ -477,10 +491,10 @@ Resources:
                       vpcDict[vpcID] = subNetDict
                   awsAZ = vpcDict[VPC][SUBNET][0]
 
-
-                  rsp3 = get_secret()
-
-                  Bear = rsp3.get("token",None)
+                  #Get Clumio token via secret (DEPRECATED)
+                  #rsp3 = get_secret()
+                  #Get Clumio token via CFT input parameter
+                  Bear = clumio_token
                   test2 = EC2BackupList()
                   test2.SetToken(Bear)
                   test2.SetPageSize(100)
